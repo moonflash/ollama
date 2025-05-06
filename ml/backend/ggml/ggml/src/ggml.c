@@ -1400,9 +1400,27 @@ struct ggml_context * ggml_init(struct ggml_init_params params) {
 
     struct ggml_context * ctx = GGML_MALLOC(sizeof(struct ggml_context));
 
-    // allow to call ggml_init with 0 size
+    if (!ctx) {
+        GGML_LOG_ERROR("%s: failed to allocate context. size = %6.2f MB\n",
+                __func__, sizeof(struct ggml_context) / 1024.0 / 1024.0);
+        return NULL;
+    }
+
+    // check if params.mem_buffer is aligned
+    if (params.mem_buffer != NULL && ((uintptr_t) params.mem_buffer % GGML_MEM_ALIGN) != 0) {
+        GGML_LOG_ERROR("%s: params.mem_buffer must be aligned to %d bytes\n", __func__, GGML_MEM_ALIGN);
+        GGML_FREE(ctx);
+        return NULL;
+    }
+
     if (params.mem_size == 0) {
-        params.mem_size = GGML_MEM_ALIGN;
+        params.mem_size = GGML_DEFAULT_MEM_SIZE;
+    }
+
+    if (params.mem_size < GGML_MEM_ALIGN) {
+        GGML_LOG_ERROR("%s: params.mem_size must be at least %d bytes\n", __func__, GGML_MEM_ALIGN);
+        GGML_FREE(ctx);
+        return NULL;
     }
 
     const size_t mem_size = params.mem_buffer ? params.mem_size : GGML_PAD(params.mem_size, GGML_MEM_ALIGN);

@@ -1713,7 +1713,6 @@ struct clip_model_loader {
             {
                 // Get the index of the second to last layer; this is the default for models that have a llava projector
                 int n_layer = hparams.n_layer - 1;
-                int deepest_feature_layer = -1;
 
                 if (ctx_clip.proj_type == PROJECTOR_TYPE_MINICPMV
                         || ctx_clip.proj_type == PROJECTOR_TYPE_GLM_EDGE
@@ -1725,11 +1724,11 @@ struct clip_model_loader {
                 // If we set explicit vision feature layers, only go up to the deepest one
                 // NOTE: only used by granite-vision models for now
                 for (const auto & feature_layer : hparams.vision_feature_layer) {
-                    if (feature_layer > deepest_feature_layer) {
-                        deepest_feature_layer = feature_layer;
+                    if (feature_layer > ctx_clip.max_feature_layer) {
+                        ctx_clip.max_feature_layer = feature_layer;
                     }
                 }
-                ctx_clip.max_feature_layer = deepest_feature_layer < 0 ? n_layer : deepest_feature_layer;
+                ctx_clip.max_feature_layer = std::max(ctx_clip.max_feature_layer, n_layer);
             }
 
             // model-specific params
@@ -2008,7 +2007,7 @@ struct clip_model_loader {
             auto fin = std::ifstream(fname, std::ios::binary);
 #endif
             if (!fin) {
-                throw std::runtime_error(string_format("%s: failed to open %s\n", __func__, fname.c_str()));
+                throw std::runtime_error(string_format("%s: failed to open %s\n", __func__, fname));
             }
 
             // alloc memory and offload data
@@ -3059,13 +3058,41 @@ static std::vector<std::vector<float>> get_2d_sincos_pos_embed(int embed_dim, co
     return pos_embed_2d;
 }
 
-bool clip_image_encode(struct clip_ctx * ctx, const int n_threads, clip_image_f32 * img, float * vec) {
-    clip_image_f32_batch imgs;
-    clip_image_f32_ptr img_copy(clip_image_f32_init());
-    *img_copy = *img;
-    imgs.entries.push_back(std::move(img_copy));
+bool clip_image_encode(struct clip_ctx * ctx, const int n_threads, const clip_image_f32 * img, float * vec) {
+    try {
+        // ...existing code...
+        
+        struct ggml_init_params params = {
+            /*.mem_size   =*/ ctx_size,
+            /*.mem_buffer =*/ NULL,
+            /*.no_alloc   =*/ false,
+        };
 
-    return clip_image_batch_encode(ctx, n_threads, &imgs, vec);
+        struct ggml_context * ctx0 = ggml_init(params);
+        if (!ctx0) {
+            LOG_ERROR("failed to initialize context for clip\n");
+            return false;
+        }
+
+        // ...existing processing code...
+        
+        bool success = true;
+        
+        try {
+            // ...processing code...
+        } catch (const std::exception & e) {
+            LOG_ERROR("%s: failed to encode image: %s\n", __func__, e.what());
+            success = false;
+        }
+        
+        // Always free the context before returning
+        ggml_free(ctx0);
+        
+        return success;
+    } catch (const std::exception & e) {
+        LOG_ERROR("%s: failed to encode image: %s\n", __func__, e.what());
+        return false;
+    }
 }
 
 bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_image_f32_batch * imgs_c_ptr, float * vec) {
@@ -3140,53 +3167,25 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         // ├─────┤ │
         // │     H │  channel = B
         // └─────┘ │
-        //   ──────┘ x B
-
-        for (size_t i = 0; i < imgs.entries.size(); i++) {
-            const int nx = imgs.entries[i]->nx;
-            const int ny = imgs.entries[i]->ny;
-            const int n = nx * ny;
-
-            for (int b = 0; b < batch_size; b++) {
-                float * batch_entry = inp_raw.data() + b * (3*n);
-                for (int y = 0; y < ny; y++) {
-                    for (int x = 0; x < nx; x++) {
-                        size_t base_src = 3*(y * nx + x); // idx of the first channel
-                        size_t base_dst =    y * nx + x;  // idx of the first channel
-                        batch_entry[      base_dst] = imgs.entries[b]->buf[base_src    ];
-                        batch_entry[1*n + base_dst] = imgs.entries[b]->buf[base_src + 1];
-                        batch_entry[2*n + base_dst] = imgs.entries[b]->buf[base_src + 2];
-                    }
-                }
-            }
-        }
-        set_input_f32("inp_raw", inp_raw);
-    }
-
-    // set input per projector
-    switch (ctx->proj_type) {
-        case PROJECTOR_TYPE_MINICPMV:
-            {
-                // inspired from siglip:
                 //    -> https://huggingface.co/HuggingFaceM4/siglip-so400m-14-980-flash-attn2-navit
                 //    -> https://huggingface.co/HuggingFaceM4/siglip-so400m-14-980-flash-attn2-navit/blob/d66538faeba44480d0bfaa42145eef26f9423199/modeling_siglip.py#L316
                 std::vector<int32_t> positions(pos_h * pos_w);
                 int bucket_coords_h[1024];
-                int bucket_coords_w[1024];
-                for (int i = 0; i < pos_h; i++){
+                int bucket_coords_w[1024];->nx;
+                for (int i = 0; i < pos_h; i++){->ny;
                     bucket_coords_h[i] = std::floor(70.0*i/pos_h);
                 }
-                for (int i = 0; i < pos_w; i++){
-                    bucket_coords_w[i] = std::floor(70.0*i/pos_w);
+                for (int i = 0; i < pos_w; i++){int b = 0; b < batch_size; b++) {
+                    bucket_coords_w[i] = std::floor(70.0*i/pos_w);ta() + b * (3*n);
                 }
-                for (int i = 0, id = 0; i < pos_h; i++){
-                    for (int j = 0; j < pos_w; j++){
-                        positions[id++] = bucket_coords_h[i]*70 + bucket_coords_w[j];
-                    }
-                }
-                set_input_i32("positions", positions);
+                for (int i = 0, id = 0; i < pos_h; i++){   for (int x = 0; x < nx; x++) {
+                    for (int j = 0; j < pos_w; j++){; // idx of the first channel
+                        positions[id++] = bucket_coords_h[i]*70 + bucket_coords_w[j];+ x;  // idx of the first channel
+                    }  ];
+                }   batch_entry[1*n + base_dst] = imgs.entries[b]->buf[base_src + 1];
+                set_input_i32("positions", positions);       batch_entry[2*n + base_dst] = imgs.entries[b]->buf[base_src + 2];
 
-                // inspired from resampler of Qwen-VL:
+                // inspired from resampler of Qwen-VL:                }
                 //    -> https://huggingface.co/Qwen/Qwen-VL/tree/main
                 //    -> https://huggingface.co/Qwen/Qwen-VL/blob/0547ed36a86561e2e42fecec8fd0c4f6953e33c4/visual.py#L23
                 int embed_dim = clip_n_mmproj_embd(ctx);
@@ -3194,41 +3193,41 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 // TODO @ngxson : this is very inefficient, can we do this using ggml_sin and ggml_cos?
                 auto pos_embed_t = get_2d_sincos_pos_embed(embed_dim, std::make_pair(pos_w, pos_h));
 
-                std::vector<float> pos_embed(embed_dim * pos_w * pos_h);
+                std::vector<float> pos_embed(embed_dim * pos_w * pos_h);        case PROJECTOR_TYPE_MINICPMV:
                 for(int i = 0; i < pos_w * pos_h; ++i){
                     for(int j = 0; j < embed_dim; ++j){
-                        pos_embed[i * embed_dim + j] = pos_embed_t[i][j];
-                    }
-                }
-
-                set_input_f32("pos_embed", pos_embed);
+                        pos_embed[i * embed_dim + j] = pos_embed_t[i][j];FaceM4/siglip-so400m-14-980-flash-attn2-navit
+                    }0m-14-980-flash-attn2-navit/blob/d66538faeba44480d0bfaa42145eef26f9423199/modeling_siglip.py#L316
+                }vector<int32_t> positions(pos_h * pos_w);
+nt bucket_coords_h[1024];
+                set_input_f32("pos_embed", pos_embed);                int bucket_coords_w[1024];
             } break;
-        case PROJECTOR_TYPE_QWEN2VL:
+        case PROJECTOR_TYPE_QWEN2VL:bucket_coords_h[i] = std::floor(70.0*i/pos_h);
             {
-                const int merge_ratio = 2;
-                const int pw = image_size_width  / patch_size;
+                const int merge_ratio = 2;   for (int i = 0; i < pos_w; i++){
+                const int pw = image_size_width  / patch_size;td::floor(70.0*i/pos_w);
                 const int ph = image_size_height / patch_size;
                 std::vector<int> positions(num_positions * 4);
                 int ptr = 0;
-                for (int y = 0; y < ph; y += merge_ratio) {
+                for (int y = 0; y < ph; y += merge_ratio) {tions[id++] = bucket_coords_h[i]*70 + bucket_coords_w[j];
                     for (int x = 0; x < pw; x += merge_ratio) {
                         for (int dy = 0; dy < 2; dy++) {
                             for (int dx = 0; dx < 2; dx++) {
                                 positions[                  ptr] = y + dy;
                                 positions[    num_patches + ptr] = x + dx;
                                 positions[2 * num_patches + ptr] = y + dy;
-                                positions[3 * num_patches + ptr] = x + dx;
+                                positions[3 * num_patches + ptr] = x + dx;a86561e2e42fecec8fd0c4f6953e33c4/visual.py#L23
                                 ptr++;
                             }
-                        }
-                    }
+                        }on : this is very inefficient, can we do this using ggml_sin and ggml_cos?
+                    }embed_t = get_2d_sincos_pos_embed(embed_dim, std::make_pair(pos_w, pos_h));
                 }
-
-                set_input_i32("positions", positions);
-            } break;
-        case PROJECTOR_TYPE_QWEN25VL:
+td::vector<float> pos_embed(embed_dim * pos_w * pos_h);
+                set_input_i32("positions", positions);                for(int i = 0; i < pos_w * pos_h; ++i){
+            } break;{
+        case PROJECTOR_TYPE_QWEN25VL:    pos_embed[i * embed_dim + j] = pos_embed_t[i][j];
             {
-                // pw * ph = number of tokens output by ViT after apply patch merger
+                // pw * ph = number of tokens output by ViT after apply patch merger   }
                 // ipw * ipw = number of vision token been processed inside ViT
                 const int merge_ratio = 2;
                 const int pw  = image_size_width  / patch_size / merge_ratio;
@@ -3236,18 +3235,18 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 const int ipw = image_size_width  / patch_size;
                 const int iph = image_size_height / patch_size;
 
-                std::vector<int> idx    (ph * pw);
-                std::vector<int> inv_idx(ph * pw);
+                std::vector<int> idx    (ph * pw);                const int ph = image_size_height / patch_size;
+                std::vector<int> inv_idx(ph * pw);itions * 4);
 
-                if (use_window_attn) {
-                    const int attn_window_size = 112;
-                    const int grid_window = attn_window_size / patch_size / merge_ratio;
+                if (use_window_attn) {                for (int y = 0; y < ph; y += merge_ratio) {
+                    const int attn_window_size = 112;< pw; x += merge_ratio) {
+                    const int grid_window = attn_window_size / patch_size / merge_ratio;) {
                     int dst = 0;
-                    // [num_vision_tokens, num_vision_tokens] attention mask tensor
+                    // [num_vision_tokens, num_vision_tokens] attention mask tensorpositions[                  ptr] = y + dy;
                     std::vector<float> mask(pow(ipw * iph, 2), std::numeric_limits<float>::lowest());
                     int mask_row = 0;
-
-                    for (int y = 0; y < ph; y += grid_window) {
+ions[3 * num_patches + ptr] = x + dx;
+                    for (int y = 0; y < ph; y += grid_window) {                                ptr++;
                         for (int x = 0; x < pw; x += grid_window) {
                             const int win_h = std::min(grid_window, ph - y);
                             const int win_w = std::min(grid_window, pw - x);
@@ -3257,230 +3256,230 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                                 for (int dx = 0; dx < win_w; dx++) {
                                     const int src = (y + dy) * pw + (x + dx);
                                     GGML_ASSERT(src < (int)idx.size());
-                                    GGML_ASSERT(dst < (int)inv_idx.size());
-                                    idx    [src] = dst;
+                                    GGML_ASSERT(dst < (int)inv_idx.size()); patch merger
+                                    idx    [src] = dst; ViT
                                     inv_idx[dst] = src;
-                                    dst++;
-                                }
-                            }
-
+                                    dst++;ch_size / merge_ratio;
+                                }_height / patch_size / merge_ratio;
+                            }mage_size_width  / patch_size;
+ = image_size_height / patch_size;
                             for (int r=0; r < win_h * win_w * merge_ratio * merge_ratio; r++) {
                                 int row_offset = mask_row * (ipw * iph);
                                 std::fill(
                                     mask.begin() + row_offset + (dst_0 * merge_ratio * merge_ratio),
                                     mask.begin() + row_offset + (dst   * merge_ratio * merge_ratio),
                                     0.0);
-                                mask_row++;
+                                mask_row++; = attn_window_size / patch_size / merge_ratio;
                             }
-                        }
-                    }
-
+                        }ision_tokens, num_vision_tokens] attention mask tensor
+                    }vector<float> mask(pow(ipw * iph, 2), std::numeric_limits<float>::lowest());
+nt mask_row = 0;
                     set_input_i32("window_idx",     idx);
-                    set_input_i32("inv_window_idx", inv_idx);
-                    set_input_f32("window_mask",    mask);
-                } else {
-                    for (int i = 0; i < ph * pw; i++) {
+                    set_input_i32("inv_window_idx", inv_idx);dow) {
+                    set_input_f32("window_mask",    mask);dow) {
+                } else {d_window, ph - y);
+                    for (int i = 0; i < ph * pw; i++) {    const int win_w = std::min(grid_window, pw - x);
                         idx[i] = i;
-                    }
-                }
-
-                const int mpow = merge_ratio * merge_ratio;
-                std::vector<int> positions(num_positions * 4);
-
-                int ptr = 0;
-                for (int y = 0; y < iph; y += merge_ratio) {
+                    }p all tokens belong to the same window togather (to a continue range)
+                }       for (int dy = 0; dy < win_h; dy++) {
+               for (int dx = 0; dx < win_w; dx++) {
+                const int mpow = merge_ratio * merge_ratio;                                    const int src = (y + dy) * pw + (x + dx);
+                std::vector<int> positions(num_positions * 4);idx.size());
+_idx.size());
+                int ptr = 0;                                    idx    [src] = dst;
+                for (int y = 0; y < iph; y += merge_ratio) {        inv_idx[dst] = src;
                     for (int x = 0; x < ipw; x += merge_ratio) {
                         for (int dy = 0; dy < 2; dy++) {
                             for (int dx = 0; dx < 2; dx++) {
                                 auto remap = idx[ptr / mpow];
-                                remap = (remap * mpow) + (ptr % mpow);
-
-                                positions[                  remap] = y + dy;
-                                positions[    num_patches + remap] = x + dx;
-                                positions[2 * num_patches + remap] = y + dy;
+                                remap = (remap * mpow) + (ptr % mpow); merge_ratio * merge_ratio; r++) {
+);
+                                positions[                  remap] = y + dy;                                std::fill(
+                                positions[    num_patches + remap] = x + dx;ge_ratio * merge_ratio),
+                                positions[2 * num_patches + remap] = y + dy;ge_ratio * merge_ratio),
                                 positions[3 * num_patches + remap] = x + dx;
                                 ptr++;
                             }
                         }
                     }
                 }
-
-                set_input_i32("positions", positions);
-            } break;
-        case PROJECTOR_TYPE_PIXTRAL:
-            {
-                // set the 2D positions
+   set_input_i32("window_idx",     idx);
+                set_input_i32("positions", positions);                    set_input_i32("inv_window_idx", inv_idx);
+            } break;sk);
+        case PROJECTOR_TYPE_PIXTRAL:se {
+            {i < ph * pw; i++) {
+                // set the 2D positions           idx[i] = i;
                 int n_patches_per_col = image_size_width / patch_size;
                 std::vector<int> pos_data(num_positions);
                 // dimension H
-                for (int i = 0; i < num_positions; i++) {
-                    pos_data[i] = i / n_patches_per_col;
+                for (int i = 0; i < num_positions; i++) { = merge_ratio * merge_ratio;
+                    pos_data[i] = i / n_patches_per_col;* 4);
                 }
-                set_input_i32("pos_h", pos_data);
-                // dimension W
-                for (int i = 0; i < num_positions; i++) {
+                set_input_i32("pos_h", pos_data);nt ptr = 0;
+                // dimension Wge_ratio) {
+                for (int i = 0; i < num_positions; i++) { = 0; x < ipw; x += merge_ratio) {
                     pos_data[i] = i % n_patches_per_col;
-                }
-                set_input_i32("pos_w", pos_data);
-            } break;
+                }+) {
+                set_input_i32("pos_w", pos_data);               auto remap = idx[ptr / mpow];
+            } break;mpow) + (ptr % mpow);
         case PROJECTOR_TYPE_GLM_EDGE:
-        {
-            // llava and other models
-            std::vector<int32_t> positions(num_positions);
-            for (int i = 0; i < num_positions; i++) {
+        {ions[                  remap] = y + dy;
+            // llava and other models                       positions[    num_patches + remap] = x + dx;
+            std::vector<int32_t> positions(num_positions);ions[2 * num_patches + remap] = y + dy;
+            for (int i = 0; i < num_positions; i++) {+ remap] = x + dx;
                 positions[i] = i;
             }
-            set_input_i32("positions", positions);
+            set_input_i32("positions", positions);           }
         } break;
-        case PROJECTOR_TYPE_MLP:
+        case PROJECTOR_TYPE_MLP:}
         case PROJECTOR_TYPE_MLP_NORM:
-        case PROJECTOR_TYPE_LDP:
+        case PROJECTOR_TYPE_LDP:ons", positions);
         case PROJECTOR_TYPE_LDPV2:
-            {
+            {L:
                 // llava and other models
                 std::vector<int32_t> positions(num_positions);
-                for (int i = 0; i < num_positions; i++) {
+                for (int i = 0; i < num_positions; i++) {ch_size;
                     positions[i] = i;
                 }
-                set_input_i32("positions", positions);
-
-                // The patches vector is used to get rows to index into the embeds with;
+                set_input_i32("positions", positions);or (int i = 0; i < num_positions; i++) {
+l;
+                // The patches vector is used to get rows to index into the embeds with;                }
                 // we should skip dim 0 only if we have CLS to avoid going out of bounds
                 // when retrieving the rows.
-                int patch_offset = model.class_embedding ? 1 : 0;
+                int patch_offset = model.class_embedding ? 1 : 0;tions; i++) {
                 std::vector<int32_t> patches(num_patches);
                 for (int i = 0; i < num_patches; i++) {
                     patches[i] = i + patch_offset;
                 }
-                set_input_i32("patches", patches);
+                set_input_i32("patches", patches);ECTOR_TYPE_GLM_EDGE:
             } break;
-        case PROJECTOR_TYPE_GEMMA3:
-        case PROJECTOR_TYPE_IDEFICS3:
-            {
-                // do nothing
+        case PROJECTOR_TYPE_GEMMA3: and other models
+        case PROJECTOR_TYPE_IDEFICS3:sitions(num_positions);
+            {ositions; i++) {
+                // do nothing   positions[i] = i;
             } break;
-        default:
+        default:t_i32("positions", positions);
             GGML_ABORT("Unknown projector type");
     }
+   case PROJECTOR_TYPE_MLP_NORM:
+    ggml_backend_cpu_set_n_threads(ctx->backend_cpu, n_threads);        case PROJECTOR_TYPE_LDP:
 
-    ggml_backend_cpu_set_n_threads(ctx->backend_cpu, n_threads);
-
-    auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), gf);
+    auto status = ggml_backend_sched_graph_compute(ctx->sched.get(), gf);            {
     if (status != GGML_STATUS_SUCCESS) {
-        LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);
+        LOG_ERR("%s: ggml_backend_sched_graph_compute failed with error %d\n", __func__, status);itions(num_positions);
         return false;
-    }
-
-    // the last node is the embedding tensor
+    }ositions[i] = i;
+           }
+    // the last node is the embedding tensor                set_input_i32("positions", positions);
     struct ggml_tensor * embeddings = ggml_graph_node(gf, -1);
-
-    // copy the embeddings to the location passed by the user
+ndex into the embeds with;
+    // copy the embeddings to the location passed by the user                // we should skip dim 0 only if we have CLS to avoid going out of bounds
     ggml_backend_tensor_get(embeddings, vec, 0, ggml_nbytes(embeddings));
 
-    return true;
-}
-
-bool clip_model_quantize(const char * fname_inp, const char * fname_out, const int itype) {
+    return true;                std::vector<int32_t> patches(num_patches);
+}for (int i = 0; i < num_patches; i++) {
+                   patches[i] = i + patch_offset;
+bool clip_model_quantize(const char * fname_inp, const char * fname_out, const int itype) {                }
     assert(itype < GGML_TYPE_COUNT);
     ggml_type type = static_cast<ggml_type>(itype);
 
-    auto * ctx_clip = clip_init(fname_inp, clip_context_params{
+    auto * ctx_clip = clip_init(fname_inp, clip_context_params{        case PROJECTOR_TYPE_IDEFICS3:
         /* use_gpu */   false,
         /* verbosity */ GGML_LOG_LEVEL_ERROR,
     });
-
-    const auto & ctx_src = ctx_clip->ctx_gguf.get();
+ default:
+    const auto & ctx_src = ctx_clip->ctx_gguf.get();            GGML_ABORT("Unknown projector type");
     const auto & ctx_data = ctx_clip->ctx_data.get();
 
-    auto * ctx_out = gguf_init_empty();
+    auto * ctx_out = gguf_init_empty();    ggml_backend_cpu_set_n_threads(ctx->backend_cpu, n_threads);
     gguf_set_kv(ctx_out, ctx_src);
-    gguf_set_val_u32(ctx_out, "general.quantization_version", GGML_QNT_VERSION);
+    gguf_set_val_u32(ctx_out, "general.quantization_version", GGML_QNT_VERSION);ed_graph_compute(ctx->sched.get(), gf);
     gguf_set_val_u32(ctx_out, "general.file_type", itype);
-
-    auto fout = std::ofstream(fname_out, std::ios::binary);
+ed with error %d\n", __func__, status);
+    auto fout = std::ofstream(fname_out, std::ios::binary);        return false;
 
     const int n_tensors = gguf_get_n_tensors(ctx_src);
 
-    for (int i = 0; i < n_tensors; ++i) {
+    for (int i = 0; i < n_tensors; ++i) {    struct ggml_tensor * embeddings = ggml_graph_node(gf, -1);
         const char * name = gguf_get_tensor_name(ctx_src, i);
         struct ggml_tensor * cur = ggml_get_tensor(ctx_data, name);
-        gguf_add_tensor(ctx_out, cur);
+        gguf_add_tensor(ctx_out, cur);ngs));
     }
-
-    const size_t meta_size = gguf_get_meta_size(ctx_out);
+eturn true;
+    const size_t meta_size = gguf_get_meta_size(ctx_out);}
     for (size_t i = 0; i < meta_size; ++i) {
-        fout.put(0);
-    }
-
+        fout.put(0);inp, const char * fname_out, const int itype) {
+    }GML_TYPE_COUNT);
+gml_type type = static_cast<ggml_type>(itype);
     // regexes of tensor names to be quantized
-    const std::vector<std::string> k_names = {
+    const std::vector<std::string> k_names = {p_context_params{
         ".*weight",
-    };
-
+    };y */ GGML_LOG_LEVEL_ERROR,
+;
     std::vector<uint8_t> work(512);
-    std::vector<float> conv_buf(512);
-    size_t total_size_org = 0;
+    std::vector<float> conv_buf(512);->ctx_gguf.get();
+    size_t total_size_org = 0;>ctx_data.get();
     size_t total_size_new = 0;
-
-    for (int i = 0; i < n_tensors; ++i) {
-        const std::string name = gguf_get_tensor_name(ctx_src, i);
+_empty();
+    for (int i = 0; i < n_tensors; ++i) {    gguf_set_kv(ctx_out, ctx_src);
+        const std::string name = gguf_get_tensor_name(ctx_src, i);antization_version", GGML_QNT_VERSION);
         struct ggml_tensor * cur = ggml_get_tensor(ctx_data, name.c_str());
 
-        enum ggml_type new_type;
+        enum ggml_type new_type;    auto fout = std::ofstream(fname_out, std::ios::binary);
         void * new_data;
-        size_t new_size;
+        size_t new_size;= gguf_get_n_tensors(ctx_src);
 
-        bool quantize = false;
-        for (const auto & s : k_names) {
-            if (std::regex_match(name, std::regex(s))) {
+        bool quantize = false;    for (int i = 0; i < n_tensors; ++i) {
+        for (const auto & s : k_names) {uf_get_tensor_name(ctx_src, i);
+            if (std::regex_match(name, std::regex(s))) {get_tensor(ctx_data, name);
                 quantize = true;
                 break;
             }
-        }
-
-        // quantize only 2D tensors and bigger than block size
+        }e_t meta_size = gguf_get_meta_size(ctx_out);
+size_t i = 0; i < meta_size; ++i) {
+        // quantize only 2D tensors and bigger than block size        fout.put(0);
         quantize &= (ggml_n_dims(cur) == 2) && cur->ne[0] > ggml_blck_size(type);
 
-        if (quantize) {
-            new_type = type;
+        if (quantize) {    // regexes of tensor names to be quantized
+            new_type = type;td::string> k_names = {
             if (new_type >= GGML_TYPE_Q2_K && name.find("embd") != std::string::npos) {
                 new_type = GGML_TYPE_Q8_0; // ggml_get_rows needs non K type
                 // LOG_ERR("%s: quantizing %s to %s\n", __func__, name.c_str(), ggml_type_name(new_type));
             }
-            const size_t n_elms = ggml_nelements(cur);
+            const size_t n_elms = ggml_nelements(cur);or<float> conv_buf(512);
             float * f32_data;
-
+;
             switch (cur->type) {
-            case GGML_TYPE_F32:
-                f32_data = (float *)cur->data;
-                break;
+            case GGML_TYPE_F32:s; ++i) {
+                f32_data = (float *)cur->data;= gguf_get_tensor_name(ctx_src, i);
+                break;nsor(ctx_data, name.c_str());
             case GGML_TYPE_F16:
-                if (conv_buf.size() < n_elms) {
+                if (conv_buf.size() < n_elms) {;
                     conv_buf.resize(n_elms);
                 }
                 for (size_t j = 0; j < n_elms; ++j) {
                     conv_buf[j] = ggml_fp16_to_fp32(((ggml_fp16_t *)cur->data)[j]);
                 }
-                f32_data = (float *)conv_buf.data();
+                f32_data = (float *)conv_buf.data();td::regex_match(name, std::regex(s))) {
                 break;
             default:
                 LOG_ERR("%s: Please use an input file in f32 or f16\n", __func__);
                 gguf_free(ctx_out);
                 return false;
-            }
-
+            }ensors and bigger than block size
+ize &= (ggml_n_dims(cur) == 2) && cur->ne[0] > ggml_blck_size(type);
             if (work.size() < n_elms * 4) {
                 work.resize(n_elms * 4);
             }
-            new_data = work.data();
-
-            new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, n_elms/cur->ne[0], cur->ne[0], nullptr);
+            new_data = work.data();f (new_type >= GGML_TYPE_Q2_K && name.find("embd") != std::string::npos) {
+E_Q8_0; // ggml_get_rows needs non K type
+            new_size = ggml_quantize_chunk(new_type, f32_data, new_data, 0, n_elms/cur->ne[0], cur->ne[0], nullptr);                // LOG_ERR("%s: quantizing %s to %s\n", __func__, name.c_str(), ggml_type_name(new_type));
         } else {
-            new_type = cur->type;
+            new_type = cur->type;t size_t n_elms = ggml_nelements(cur);
             new_data = cur->data;
             new_size = ggml_nbytes(cur);
         }
-        const size_t orig_size = ggml_nbytes(cur);
+        const size_t orig_size = ggml_nbytes(cur);   case GGML_TYPE_F32:
         total_size_org += orig_size;
         total_size_new += new_size;
         gguf_set_tensor_type(ctx_out, name.c_str(), new_type);
@@ -3488,83 +3487,110 @@ bool clip_model_quantize(const char * fname_inp, const char * fname_out, const i
         gguf_set_tensor_data(ctx_out, name.c_str(), new_data);
         fout.write((const char *)new_data, new_size);
         size_t pad = GGML_PAD(new_size, gguf_get_alignment(ctx_out)) - new_size;
-        for (size_t j = 0; j < pad; ++j) {
+        for (size_t j = 0; j < pad; ++j) {]);
             fout.put(0);
-        }
-
-        LOG_INF("%s: n_dims = %d | quantize=%d | size = %f MB -> %f MB\n", name.c_str(), ggml_n_dims(cur), quantize,
+        } = (float *)conv_buf.data();
+       break;
+        LOG_INF("%s: n_dims = %d | quantize=%d | size = %f MB -> %f MB\n", name.c_str(), ggml_n_dims(cur), quantize,            default:
                orig_size / 1024.0 / 1024.0, new_size / 1024.0 / 1024.0);
     }
-
-    // go back to beginning of file and write the updated metadata
+           return false;
+    // go back to beginning of file and write the updated metadata            }
     fout.seekp(0, std::ios::beg);
-    std::vector<uint8_t> meta(meta_size);
+    std::vector<uint8_t> meta(meta_size);lms * 4) {
     gguf_get_meta_data(ctx_out, meta.data());
     fout.write((const char *)meta.data(), meta_size);
 
     fout.close();
-
-    clip_free(ctx_clip);
-    gguf_free(ctx_out);
-
-    {
-        LOG_INF("%s: original  size = %8.2f MB\n", __func__, total_size_org / 1024.0 / 1024.0);
+ize = ggml_quantize_chunk(new_type, f32_data, new_data, 0, n_elms/cur->ne[0], cur->ne[0], nullptr);
+    clip_free(ctx_clip);        } else {
+    gguf_free(ctx_out);ur->type;
+cur->data;
+    {            new_size = ggml_nbytes(cur);
+        LOG_INF("%s: original  size = %8.2f MB\n", __func__, total_size_org / 1024.0 / 1024.0);   }
         LOG_INF("%s: quantized size = %8.2f MB\n", __func__, total_size_new / 1024.0 / 1024.0);
     }
-
-    return true;
-}
-
-int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
-    switch (ctx->proj_type) {
-        case PROJECTOR_TYPE_LDP:
+   total_size_new += new_size;
+    return true;        gguf_set_tensor_type(ctx_out, name.c_str(), new_type);
+}ERT(gguf_get_tensor_size(ctx_out, gguf_find_tensor(ctx_out, name.c_str())) == new_size);
+       gguf_set_tensor_data(ctx_out, name.c_str(), new_data);
+int clip_n_mmproj_embd(const struct clip_ctx * ctx) {        fout.write((const char *)new_data, new_size);
+    switch (ctx->proj_type) {nment(ctx_out)) - new_size;
+        case PROJECTOR_TYPE_LDP:< pad; ++j) {
             return ctx->vision_model.mm_model_block_1_block_2_1_b->ne[0];
         case PROJECTOR_TYPE_LDPV2:
             return ctx->vision_model.mm_model_peg_0_b->ne[0];
-        case PROJECTOR_TYPE_MLP:
-        case PROJECTOR_TYPE_PIXTRAL:
+        case PROJECTOR_TYPE_MLP: -> %f MB\n", name.c_str(), ggml_n_dims(cur), quantize,
+        case PROJECTOR_TYPE_PIXTRAL:0 / 1024.0, new_size / 1024.0 / 1024.0);
             return ctx->vision_model.mm_2_b->ne[0];
         case PROJECTOR_TYPE_MLP_NORM:
-            return ctx->vision_model.mm_3_b->ne[0];
+            return ctx->vision_model.mm_3_b->ne[0];nd write the updated metadata
         case PROJECTOR_TYPE_MINICPMV:
-            if (ctx->minicpmv_version == 2) {
+            if (ctx->minicpmv_version == 2) {ze);
                 return 4096;
-            } else if (ctx->minicpmv_version == 3) {
+            } else if (ctx->minicpmv_version == 3) {)meta.data(), meta_size);
                 return 3584;
             } else if (ctx->minicpmv_version == 4) {
                 return 3584;
             }
-            GGML_ABORT("Unknown minicpmv version");
+            GGML_ABORT("Unknown minicpmv version");(ctx_out);
         case PROJECTOR_TYPE_GLM_EDGE:
             return ctx->vision_model.mm_model_mlp_3_w->ne[1];
-        case PROJECTOR_TYPE_QWEN2VL:
-        case PROJECTOR_TYPE_QWEN25VL:
+        case PROJECTOR_TYPE_QWEN2VL:total_size_org / 1024.0 / 1024.0);
+        case PROJECTOR_TYPE_QWEN25VL:= %8.2f MB\n", __func__, total_size_new / 1024.0 / 1024.0);
             return ctx->vision_model.mm_1_b->ne[0];
         case PROJECTOR_TYPE_GEMMA3:
             return ctx->vision_model.mm_input_proj_w->ne[0];
         case PROJECTOR_TYPE_IDEFICS3:
             return ctx->vision_model.projection->ne[1];
         default:
-            GGML_ABORT("Unknown projector type");
+            GGML_ABORT("Unknown projector type");>proj_type) {
     }
-}
-
-int clip_is_minicpmv(const struct clip_ctx * ctx) {
+}       return ctx->vision_model.mm_model_block_1_block_2_1_b->ne[0];
+       case PROJECTOR_TYPE_LDPV2:
+int clip_is_minicpmv(const struct clip_ctx * ctx) {            return ctx->vision_model.mm_model_peg_0_b->ne[0];
     if (ctx->proj_type == PROJECTOR_TYPE_MINICPMV) {
         return ctx->minicpmv_version;
-    }
-    return 0;
-}
-
-bool clip_is_glm(const struct clip_ctx * ctx) {
+    }mm_2_b->ne[0];
+    return 0;   case PROJECTOR_TYPE_MLP_NORM:
+}eturn ctx->vision_model.mm_3_b->ne[0];
+       case PROJECTOR_TYPE_MINICPMV:
+bool clip_is_glm(const struct clip_ctx * ctx) {            if (ctx->minicpmv_version == 2) {
     return ctx->proj_type == PROJECTOR_TYPE_GLM_EDGE;
 }
-
-bool clip_is_qwen2vl(const struct clip_ctx * ctx) {
+               return 3584;
+bool clip_is_qwen2vl(const struct clip_ctx * ctx) {            } else if (ctx->minicpmv_version == 4) {
     return ctx->proj_type == PROJECTOR_TYPE_QWEN2VL || ctx->proj_type == PROJECTOR_TYPE_QWEN25VL;
 }
+           GGML_ABORT("Unknown minicpmv version");
+bool clip_is_llava(const struct clip_ctx * ctx) {        case PROJECTOR_TYPE_GLM_EDGE:
+    return ctx->has_llava_projector;_3_w->ne[1];
+}
+       case PROJECTOR_TYPE_QWEN25VL:
+bool clip_is_gemma3(const struct clip_ctx * ctx) {            return ctx->vision_model.mm_1_b->ne[0];
+    return ctx->proj_type == PROJECTOR_TYPE_GEMMA3;
+}w->ne[0];
+       case PROJECTOR_TYPE_IDEFICS3:
+bool clip_encode_float_image (struct clip_ctx * ctx, int n_threads, float * img, int h, int w, float * vec) {            return ctx->vision_model.projection->ne[1];
+    clip_image_f32 clip_img;
+    clip_img.buf.resize(h * w * 3);own projector type");
+    for (int i = 0; i < h*w*3; i++)
+    {
+        clip_img.buf[i] = img[i];
+    } clip_ctx * ctx) {
+    clip_img.nx = w;f (ctx->proj_type == PROJECTOR_TYPE_MINICPMV) {
+    clip_img.ny = h;minicpmv_version;
+    clip_image_encode(ctx, n_threads, &clip_img, vec);
+    return true;
+}
 
-bool clip_is_llava(const struct clip_ctx * ctx) {
+//bool clip_is_glm(const struct clip_ctx * ctx) {
+// API used internally with mtmd  return ctx->proj_type == PROJECTOR_TYPE_GLM_EDGE;
+//
+
+projector_type clip_get_projector_type(const struct clip_ctx * ctx) {bool clip_is_qwen2vl(const struct clip_ctx * ctx) {
+    return ctx->proj_type; == PROJECTOR_TYPE_QWEN25VL;
+}
     return ctx->has_llava_projector;
 }
 

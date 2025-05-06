@@ -566,6 +566,11 @@ static void ggml_metal_heap_free(struct ggml_metal_heap * heap) {
 
     ggml_metal_heap_reset(heap);
 
+    // Make sure all buffers are released
+    for (id<MTLBuffer> buf in heap->bufs) {
+        [buf release];
+    }
+    
     [heap->obj  release];
     [heap->bufs release];
 

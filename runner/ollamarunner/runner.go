@@ -334,6 +334,12 @@ func (s *Server) removeSequence(seqIndex int, reason llm.DoneReason) {
 	seq.doneReason = reason
 	close(seq.responses)
 	close(seq.embedding)
+
+	for _, ctx := range seq.ctxs {
+		ctx.Close()
+	}
+	seq.ctxs = nil // Clear the slice to release references
+
 	seq.cache.InUse = false
 	s.seqs[seqIndex] = nil
 	s.seqsSem.Release(1)
